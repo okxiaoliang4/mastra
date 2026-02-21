@@ -1,6 +1,6 @@
 import type { FilesystemMountConfig } from '@mastra/core/workspace';
 
-import { LOG_PREFIX, validateBucketName, validateEndpoint } from './types';
+import { LOG_PREFIX, validateBucketName, validateEndpoint, validatePrefix } from './types';
 import type { MountContext } from './types';
 
 /**
@@ -25,10 +25,22 @@ export interface E2BS3MountConfig extends FilesystemMountConfig {
   secretAccessKey?: string;
   /** Mount as read-only (even if credentials have write access) */
   readOnly?: boolean;
+  /**
+   * S3 key prefix to scope the mount.
+   * When set, s3fs uses `bucket:/prefix` syntax to mount only the prefix
+   * subdirectory, so sandbox paths map directly to prefixed S3 keys.
+   * Without trailing slash (e.g., 'workspace/user1/agents/abc').
+   */
+  prefix?: string;
 }
 
 /**
  * Mount an S3 bucket using s3fs-fuse.
+ *
+ * When `config.prefix` is set, s3fs uses `bucket:/prefix` syntax to mount only
+ * the prefix subdirectory directly to `mountPath`. This ensures that file operations
+ * within the sandbox at `mountPath` map directly to the prefixed S3 keys, aligning
+ * FUSE paths with the S3Filesystem API.
  */
 export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: MountContext): Promise<void> {
   const { sandbox, logger } = ctx;
@@ -37,6 +49,9 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
   validateBucketName(config.bucket);
   if (config.endpoint) {
     validateEndpoint(config.endpoint);
+  }
+  if (config.prefix) {
+    validatePrefix(config.prefix);
   }
 
   // Check if s3fs is installed
@@ -123,8 +138,13 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
     logger.debug(`${LOG_PREFIX} Mounting as read-only`);
   }
 
+  // Build the s3fs bucket source:
+  // - Without prefix: just the bucket name (existing behavior)
+  // - With prefix: use `bucket:/prefix` syntax to mount only the subdirectory
+  const bucketSource = config.prefix ? `${config.bucket}:/${config.prefix}` : config.bucket;
+
   // Mount with sudo (required for /dev/fuse access)
-  const mountCmd = `sudo s3fs ${config.bucket} ${mountPath} -o ${mountOptions.join(' -o ')}`;
+  const mountCmd = `sudo s3fs ${bucketSource} ${mountPath} -o ${mountOptions.join(' -o ')}`;
   logger.debug(`${LOG_PREFIX} Mounting S3:`, hasCredentials ? mountCmd.replace(credentialsPath, '***') : mountCmd);
 
   try {
@@ -143,5 +163,9 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
     const stdout = errorObj.result?.stdout || '';
     logger.error(`${LOG_PREFIX} s3fs error:`, { stderr, stdout, error: String(error) });
     throw new Error(`Failed to mount S3 bucket: ${stderr || stdout || error}`);
+  }
+
+  if (config.prefix) {
+    logger.debug(`${LOG_PREFIX} S3 prefix mount successful: sandbox "${mountPath}" → S3 "${config.prefix}/"`);
   }
 }
