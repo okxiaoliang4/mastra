@@ -91,7 +91,9 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
 
   // Determine if we have credentials or using public bucket mode
   const hasCredentials = config.accessKeyId && config.secretAccessKey;
-  const credentialsPath = '/tmp/.passwd-s3fs';
+  const passwdPath = '/tmp/.passwd-s3fs';
+  // AWS credentials file path — required when session token is present
+  const awsCredentialsPath = '/tmp/.aws-credentials-s3fs';
 
   // S3-compatible services (R2, MinIO, etc.) require credentials
   // public_bucket=1 only works for truly public AWS S3 buckets
@@ -104,24 +106,37 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
   }
 
   if (hasCredentials) {
-    // Write credentials file (remove old one first to avoid permission issues)
-    // Format: accessKeyId:secretAccessKey[:sessionToken]
-    // The three-part format is required for STS/AssumeRole temporary credentials
-    const credentialsParts = [config.accessKeyId, config.secretAccessKey];
     if (config.sessionToken) {
-      credentialsParts.push(config.sessionToken);
+      // STS temporary credentials: must use AWS credentials file format (INI).
+      // The passwd file format only supports "key:secret" and cannot carry a session token.
+      // s3fs reads this file via -o credfile= and activates token support via -o use_session_token.
+      const awsCredsContent = [
+        '[default]',
+        `aws_access_key_id=${config.accessKeyId}`,
+        `aws_secret_access_key=${config.secretAccessKey}`,
+        `aws_session_token=${config.sessionToken}`,
+      ].join('\n');
+      await sandbox.commands.run(`sudo rm -f ${awsCredentialsPath}`);
+      await sandbox.files.write(awsCredentialsPath, awsCredsContent);
+      await sandbox.commands.run(`chmod 600 ${awsCredentialsPath}`);
+    } else {
+      // Long-lived IAM credentials: use simple passwd file (key:secret)
+      await sandbox.commands.run(`sudo rm -f ${passwdPath}`);
+      await sandbox.files.write(passwdPath, `${config.accessKeyId}:${config.secretAccessKey}`);
+      await sandbox.commands.run(`chmod 600 ${passwdPath}`);
     }
-    const credentialsContent = credentialsParts.join(':');
-    await sandbox.commands.run(`sudo rm -f ${credentialsPath}`);
-    await sandbox.files.write(credentialsPath, credentialsContent);
-    await sandbox.commands.run(`chmod 600 ${credentialsPath}`);
   }
 
   // Build mount options
   const mountOptions: string[] = [];
 
   if (hasCredentials) {
-    mountOptions.push(`passwd_file=${credentialsPath}`);
+    if (config.sessionToken) {
+      // Use AWS credentials file + use_session_token for STS credentials
+      mountOptions.push(`credfile=${awsCredentialsPath}`, 'use_session_token');
+    } else {
+      mountOptions.push(`passwd_file=${passwdPath}`);
+    }
   } else {
     // Public bucket mode - read-only access without credentials
     mountOptions.push('public_bucket=1');
@@ -153,7 +168,9 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
 
   // Mount with sudo (required for /dev/fuse access)
   const mountCmd = `sudo s3fs ${bucketSource} ${mountPath} -o ${mountOptions.join(' -o ')}`;
-  logger.debug(`${LOG_PREFIX} Mounting S3:`, hasCredentials ? mountCmd.replace(credentialsPath, '***') : mountCmd);
+  // Redact credential file paths from logs to avoid leaking paths with sensitive content
+  const logCmd = mountCmd.replace(passwdPath, '***').replace(awsCredentialsPath, '***');
+  logger.debug(`${LOG_PREFIX} Mounting S3:`, hasCredentials ? logCmd : mountCmd);
 
   try {
     const result = await sandbox.commands.run(mountCmd, { timeoutMs: 60_000 });
