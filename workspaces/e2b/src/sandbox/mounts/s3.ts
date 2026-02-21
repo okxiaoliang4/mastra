@@ -92,8 +92,9 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
   // Determine if we have credentials or using public bucket mode
   const hasCredentials = config.accessKeyId && config.secretAccessKey;
   const passwdPath = '/tmp/.passwd-s3fs';
-  // AWS credentials file path — required when session token is present
-  const awsCredentialsPath = '/tmp/.aws-credentials-s3fs';
+  // s3fs reads AWS credentials from ~/.aws/credentials when run with sudo, ~ = /root
+  const awsCredentialsDir = '/root/.aws';
+  const awsCredentialsPath = `${awsCredentialsDir}/credentials`;
 
   // S3-compatible services (R2, MinIO, etc.) require credentials
   // public_bucket=1 only works for truly public AWS S3 buckets
@@ -107,18 +108,23 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
 
   if (hasCredentials) {
     if (config.sessionToken) {
-      // STS temporary credentials: must use AWS credentials file format (INI).
-      // The passwd file format only supports "key:secret" and cannot carry a session token.
-      // s3fs reads this file via -o credfile= and activates token support via -o use_session_token.
+      // STS temporary credentials: must use standard AWS credentials file (INI format).
+      // The s3fs passwd file only supports "key:secret" — no session token support.
+      // s3fs automatically reads ~/.aws/credentials; with sudo, ~ resolves to /root.
+      // The -o use_session_token flag tells s3fs to look for aws_session_token in the file.
       const awsCredsContent = [
         '[default]',
         `aws_access_key_id=${config.accessKeyId}`,
         `aws_secret_access_key=${config.secretAccessKey}`,
         `aws_session_token=${config.sessionToken}`,
       ].join('\n');
-      await sandbox.commands.run(`sudo rm -f ${awsCredentialsPath}`);
-      await sandbox.files.write(awsCredentialsPath, awsCredsContent);
-      await sandbox.commands.run(`chmod 600 ${awsCredentialsPath}`);
+      // Write to temp file first (user-writable), then sudo mv to /root/.aws/
+      // This avoids shell-escaping issues with session tokens containing special chars
+      const tmpCredsPath = '/tmp/.aws-creds-staging';
+      await sandbox.files.write(tmpCredsPath, awsCredsContent);
+      await sandbox.commands.run(
+        `sudo mkdir -p ${awsCredentialsDir} && sudo mv ${tmpCredsPath} ${awsCredentialsPath} && sudo chmod 600 ${awsCredentialsPath}`,
+      );
     } else {
       // Long-lived IAM credentials: use simple passwd file (key:secret)
       await sandbox.commands.run(`sudo rm -f ${passwdPath}`);
@@ -132,8 +138,8 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
 
   if (hasCredentials) {
     if (config.sessionToken) {
-      // Use AWS credentials file + use_session_token for STS credentials
-      mountOptions.push(`credfile=${awsCredentialsPath}`, 'use_session_token');
+      // s3fs reads /root/.aws/credentials automatically when run as root (via sudo)
+      mountOptions.push('use_session_token');
     } else {
       mountOptions.push(`passwd_file=${passwdPath}`);
     }
@@ -168,8 +174,8 @@ export async function mountS3(mountPath: string, config: E2BS3MountConfig, ctx: 
 
   // Mount with sudo (required for /dev/fuse access)
   const mountCmd = `sudo s3fs ${bucketSource} ${mountPath} -o ${mountOptions.join(' -o ')}`;
-  // Redact credential file paths from logs to avoid leaking paths with sensitive content
-  const logCmd = mountCmd.replace(passwdPath, '***').replace(awsCredentialsPath, '***');
+  // Redact credential file paths from logs
+  const logCmd = mountCmd.replace(passwdPath, '***');
   logger.debug(`${LOG_PREFIX} Mounting S3:`, hasCredentials ? logCmd : mountCmd);
 
   try {
