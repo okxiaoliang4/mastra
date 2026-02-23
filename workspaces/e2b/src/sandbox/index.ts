@@ -75,6 +75,22 @@ export interface E2BSandboxOptions extends MastraSandboxOptions {
   /** Custom metadata */
   metadata?: Record<string, unknown>;
 
+  /**
+   * Called when the mount target directory is non-empty.
+   *
+   * Use this hook to back up or relocate conflicting files before they are
+   * removed. After the hook returns, the directory contents are cleared and
+   * the mount proceeds normally.
+   *
+   * If not provided, the directory is cleared automatically.
+   */
+  onMountConflict?: (args: {
+    /** Absolute path of the mount target */
+    mountPath: string;
+    /** The underlying E2B sandbox instance for running commands */
+    sandbox: Sandbox;
+  }) => Promise<void>;
+
   /** Domain for self-hosted E2B. Falls back to E2B_DOMAIN env var. */
   domain?: string;
   /** API URL for self-hosted E2B. Falls back to E2B_API_URL env var. */
@@ -145,6 +161,7 @@ export class E2BSandbox extends MastraSandbox {
   private readonly env: Record<string, string>;
   private readonly metadata: Record<string, unknown>;
   private readonly connectionOpts: Record<string, string>;
+  private readonly onMountConflict?: E2BSandboxOptions['onMountConflict'];
   declare readonly mounts: MountManager; // Non-optional (initialized by BaseSandbox)
 
   /** Resolved template ID after building (if needed) */
@@ -161,6 +178,7 @@ export class E2BSandbox extends MastraSandbox {
     this.templateSpec = options.template;
     this.env = options.env ?? {};
     this.metadata = options.metadata ?? {};
+    this.onMountConflict = options.onMountConflict;
     this.connectionOpts = {
       ...(options.domain && { domain: options.domain }),
       ...(options.apiUrl && { apiUrl: options.apiUrl }),
@@ -259,10 +277,20 @@ export class E2BSandbox extends MastraSandbox {
         `[ -d "${mountPath}" ] && [ "$(ls -A "${mountPath}" 2>/dev/null)" ] && echo "non-empty" || echo "ok"`,
       );
       if (checkResult.stdout.trim() === 'non-empty') {
-        const error = `Cannot mount at ${mountPath}: directory exists and is not empty. Mounting would hide existing files. Use a different path or empty the directory first.`;
-        this.logger.error(`${LOG_PREFIX} ${error}`);
-        this.mounts.set(mountPath, { filesystem, state: 'error', config, error });
-        return { success: false, mountPath, error };
+        // Give the caller a chance to back up / relocate files before clearing
+        if (this.onMountConflict) {
+          try {
+            await this.onMountConflict({ mountPath, sandbox: this._sandbox });
+          } catch (hookError) {
+            this.logger.error(`${LOG_PREFIX} onMountConflict hook failed:`, hookError);
+            return { success: false, mountPath, error: `Mount conflict hook failed: ${String(hookError)}` };
+          }
+        } else {
+          const error = `Cannot mount at ${mountPath}: directory exists and is not empty. Mounting would hide existing files. Use a different path or empty the directory first.`;
+          this.logger.error(`${LOG_PREFIX} ${error}`);
+          this.mounts.set(mountPath, { filesystem, state: 'error', config, error });
+          return { success: false, mountPath, error };
+        }
       }
     } catch {
       // Check failed, proceed anyway

@@ -43,8 +43,10 @@ export type SandboxLifecycleHook = (args: { sandbox: WorkspaceSandbox }) => void
  * Providers extend this to add their own options while inheriting lifecycle hooks.
  */
 export interface MastraSandboxOptions {
-  /** Called after the sandbox reaches 'running' status */
+  /** Called after the sandbox reaches 'running' status (before mounts are processed) */
   onStart?: SandboxLifecycleHook;
+  /** Called after all pending mounts have been processed (mounted or errored) */
+  onMountsReady?: SandboxLifecycleHook;
   /** Called before the sandbox stops */
   onStop?: SandboxLifecycleHook;
   /** Called before the sandbox is destroyed */
@@ -119,6 +121,7 @@ export abstract class MastraSandbox extends MastraBase implements WorkspaceSandb
 
   /** Lifecycle callbacks */
   private readonly _onStart?: SandboxLifecycleHook;
+  private readonly _onMountsReady?: SandboxLifecycleHook;
   private readonly _onStop?: SandboxLifecycleHook;
   private readonly _onDestroy?: SandboxLifecycleHook;
 
@@ -126,6 +129,7 @@ export abstract class MastraSandbox extends MastraBase implements WorkspaceSandb
     super({ name: options.name, component: RegisteredLogger.WORKSPACE });
 
     this._onStart = options.onStart;
+    this._onMountsReady = options.onMountsReady;
     this._onStop = options.onStop;
     this._onDestroy = options.onDestroy;
 
@@ -212,6 +216,14 @@ export abstract class MastraSandbox extends MastraBase implements WorkspaceSandb
     } catch (error) {
       // Mount failures are tracked in MountManager — log but don't affect sandbox status
       this.logger.warn('Unexpected error processing pending mounts', { error });
+    }
+
+    // Fire onMountsReady callback after all mounts have been processed
+    // Useful for post-mount setup like symlinks, file merges, etc.
+    try {
+      await this._onMountsReady?.({ sandbox: this });
+    } catch (error) {
+      this.logger.warn('onMountsReady callback failed', { error });
     }
   }
 
