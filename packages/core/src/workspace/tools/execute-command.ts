@@ -15,7 +15,7 @@ Usage:
 - Optionally use cwd to override the working directory. Commands run from the sandbox default if omitted.`,
   inputSchema: z.object({
     command: z.string().describe('The command to execute (e.g., "ls", "npm", "python")'),
-    args: z.array(z.string()).nullish().default([]).describe('Arguments to pass to the command'),
+    args: z.array(z.string()).optional().default([]).describe('Arguments to pass to the command'),
     timeout: z.number().nullish().describe('Maximum execution time in milliseconds. Example: 60000 for 1 minute.'),
     cwd: z.string().nullish().describe('Working directory for the command'),
   }),
