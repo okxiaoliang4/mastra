@@ -119,15 +119,19 @@ export async function handleChatStream<UI_MESSAGE extends UIMessage, OUTPUT = un
   return createUIMessageStream<UI_MESSAGE>({
     originalMessages: messages,
     execute: async ({ writer }) => {
-      for await (const part of toAISdkV5Stream(result, {
-        from: 'agent',
-        lastMessageId,
-        sendStart,
-        sendFinish,
-        sendReasoning,
-        sendSources,
-      })!) {
-        writer.write(part as InferUIMessageChunk<UI_MESSAGE>);
+      try {
+        for await (const part of toAISdkV5Stream(result, {
+          from: 'agent',
+          lastMessageId,
+          sendStart,
+          sendFinish,
+          sendReasoning,
+          sendSources,
+        })) {
+          writer.write(part as InferUIMessageChunk<UI_MESSAGE>);
+        }
+      } finally {
+        result.dispose();
       }
     },
   });

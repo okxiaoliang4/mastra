@@ -158,10 +158,18 @@ Returns a `WorkflowRunOutput` object that implements the async iterable interfac
     type: 'Promise<{ inputTokens: number; outputTokens: number; totalTokens: number, reasoningTokens?: number, cachedInputTokens?: number }>',
     description: 'A promise that resolves to token usage statistics',
   },
+  {
+    name: 'dispose',
+    type: '() => void',
+    description:
+      'Releases buffered chunks and event listeners after you finish consuming fullStream and no longer need replay.',
+  },
 ]}
 />
 
 ## Extended usage example
+
+Stream workflow events and call `dispose()` after the loop if you do not need replay.
 
 ```typescript
 const run = await workflow.createRun()
@@ -176,6 +184,8 @@ const stream = run.stream({
 for await (const chunk of stream) {
   console.log(chunk)
 }
+
+stream.dispose()
 
 // Access the final result
 const result = await stream.result

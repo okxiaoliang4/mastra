@@ -25,6 +25,8 @@ export class WorkflowRunOutput<
   #baseStream: ReadableStream<WorkflowStreamEvent>;
   #emitter = new EventEmitter();
   #bufferedChunks: WorkflowStreamEvent[] = [];
+  #bufferReplayEnabled = true;
+  #disposed = false;
 
   #streamFinished = false;
 
@@ -71,12 +73,16 @@ export class WorkflowRunOutput<
               },
             } as WorkflowStreamEvent;
 
-            self.#bufferedChunks.push(chunk);
+            if (self.#bufferReplayEnabled) {
+              self.#bufferedChunks.push(chunk);
+            }
             self.#emitter.emit('chunk', chunk);
           },
           write(chunk) {
             if (chunk.type !== 'workflow-step-finish') {
-              self.#bufferedChunks.push(chunk);
+              if (self.#bufferReplayEnabled) {
+                self.#bufferedChunks.push(chunk);
+              }
               self.#emitter.emit('chunk', chunk);
             }
 
@@ -115,7 +121,7 @@ export class WorkflowRunOutput<
               self.#status = 'success';
             }
 
-            self.#emitter.emit('chunk', {
+            const finishChunk = {
               type: 'workflow-finish',
               runId: self.runId,
               from: ChunkFrom.WORKFLOW,
@@ -133,7 +139,9 @@ export class WorkflowRunOutput<
                 // Include tripwire data when status is 'tripwire'
                 ...(self.#status === 'tripwire' && self.#tripwireData ? { tripwire: self.#tripwireData } : {}),
               },
-            });
+            } as WorkflowStreamEvent;
+
+            self.#emitter.emit('chunk', finishChunk);
 
             self.#delayedPromises.usage.resolve(self.#usageCount);
 
@@ -243,12 +251,16 @@ export class WorkflowRunOutput<
               },
             } as WorkflowStreamEvent;
 
-            self.#bufferedChunks.push(chunk);
+            if (self.#bufferReplayEnabled) {
+              self.#bufferedChunks.push(chunk);
+            }
             self.#emitter.emit('chunk', chunk);
           },
           write(chunk) {
             if (chunk.type !== 'workflow-step-finish') {
-              self.#bufferedChunks.push(chunk);
+              if (self.#bufferReplayEnabled) {
+                self.#bufferedChunks.push(chunk);
+              }
               self.#emitter.emit('chunk', chunk);
             }
 
@@ -333,6 +345,24 @@ export class WorkflowRunOutput<
     } catch (error) {
       options?.onError?.(error);
     }
+  }
+
+  /**
+   * Release buffered stream chunks and event listeners to free memory.
+   * Call this after you finish consuming fullStream and no longer need replay.
+   */
+  dispose(): void {
+    if (this.#disposed) {
+      return;
+    }
+    this.#disposed = true;
+    this.#bufferReplayEnabled = false;
+    this.#bufferedChunks = [];
+
+    if (!this.#streamFinished) {
+      console.warn('WorkflowRunOutput.dispose() called before stream finished — forcing listener cleanup');
+    }
+    this.#emitter.removeAllListeners();
   }
 
   get fullStream(): ReadableStream<WorkflowStreamEvent> {

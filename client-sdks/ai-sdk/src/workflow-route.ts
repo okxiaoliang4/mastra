@@ -71,13 +71,17 @@ export async function handleWorkflowStream<UI_MESSAGE extends UIMessage>({
 
   return createUIMessageStream<UI_MESSAGE>({
     execute: async ({ writer }) => {
-      for await (const part of toAISdkV5Stream(stream, {
-        from: 'workflow',
-        includeTextStreamParts,
-        sendReasoning,
-        sendSources,
-      })) {
-        writer.write(part as InferUIMessageChunk<UI_MESSAGE>);
+      try {
+        for await (const part of toAISdkV5Stream(stream, {
+          from: 'workflow',
+          includeTextStreamParts,
+          sendReasoning,
+          sendSources,
+        })) {
+          writer.write(part as InferUIMessageChunk<UI_MESSAGE>);
+        }
+      } finally {
+        stream.dispose();
       }
     },
   });

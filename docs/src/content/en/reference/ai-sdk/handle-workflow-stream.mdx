@@ -15,6 +15,8 @@ Framework-agnostic handler for streaming workflow execution in AI SDK-compatible
 
 Use [`workflowRoute()`](/reference/ai-sdk/workflow-route) if you want to create a workflow route inside a Mastra server.
 
+After the stream finishes, `handleWorkflowStream()` releases buffered chunks on the underlying workflow stream. If you manage the stream manually, call `dispose()` after you finish consuming `fullStream`.
+
 :::tip Agent streaming in workflows
 
 When a workflow step pipes an agent's stream to the workflow writer (e.g., `await response.fullStream.pipeTo(writer)`), the agent's text chunks and tool calls are forwarded to the UI stream in real time, even when the agent runs inside workflow steps.

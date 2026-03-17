@@ -146,6 +146,8 @@ export class MastraModelOutput<OUTPUT = undefined> extends MastraBase {
   #error: Error | undefined;
   #baseStream: ReadableStream<ChunkType<OUTPUT>>;
   #bufferedChunks: ChunkType<OUTPUT>[] = [];
+  #bufferReplayEnabled = true;
+  #disposed = false;
   #streamFinished = false;
   #emitter = new EventEmitter();
   #bufferedSteps: LLMStepResult<OUTPUT>[] = [];
@@ -1529,7 +1531,9 @@ export class MastraModelOutput<OUTPUT = undefined> extends MastraBase {
   }
 
   #emitChunk(chunk: ChunkType<OUTPUT>) {
-    this.#bufferedChunks.push(chunk); // add to bufferedChunks for replay in new streams
+    if (this.#bufferReplayEnabled) {
+      this.#bufferedChunks.push(chunk); // add to bufferedChunks for replay in new streams
+    }
     this.#emitter.emit('chunk', chunk); // emit chunk for existing listener streams
   }
 
@@ -1580,6 +1584,25 @@ export class MastraModelOutput<OUTPUT = undefined> extends MastraBase {
 
   get status() {
     return this.#status;
+  }
+
+  /**
+   * Release buffered stream chunks and event listeners to free memory.
+   * Call this after you finish consuming fullStream and no longer need replay.
+   */
+  dispose() {
+    if (this.#disposed) {
+      return;
+    }
+    this.#disposed = true;
+    this.#bufferReplayEnabled = false;
+    this.#bufferedChunks = [];
+    this.#bufferedSteps = [];
+
+    if (!this.#streamFinished) {
+      this.logger.warn('MastraModelOutput.dispose() called before stream finished — forcing listener cleanup');
+    }
+    this.#emitter.removeAllListeners();
   }
 
   serializeState() {

@@ -198,5 +198,46 @@ describe('MastraModelOutput', () => {
       expect(result.traceId).toBe('mastra-trace-id');
       expect(result.spanId).toBe('mastra-root-span-id');
     });
+
+    it('should clear fullStream replay buffer after dispose', async () => {
+      const runId = 'dispose-run';
+      const messageList = new MessageList({ threadId: 'dispose-thread' });
+
+      messageList.add(
+        {
+          id: 'msg-dispose',
+          role: 'assistant',
+          content: { format: 2 as const, parts: [{ type: 'text' as const, text: 'hello' }] },
+          createdAt: new Date(),
+        },
+        'response',
+      );
+
+      const stream = createChunkStream([createStepFinishChunk(runId), createFinishChunk(runId)]);
+
+      const output = new MastraModelOutput({
+        model: { modelId: 'test-model', provider: 'test', version: 'v3' },
+        stream,
+        messageList,
+        messageId: 'msg-dispose',
+        options: { runId },
+      });
+
+      const consumed: ChunkType[] = [];
+      for await (const chunk of output.fullStream) {
+        consumed.push(chunk);
+      }
+
+      expect(consumed.length).toBeGreaterThan(0);
+
+      output.dispose();
+
+      const replay: ChunkType[] = [];
+      for await (const chunk of output.fullStream) {
+        replay.push(chunk);
+      }
+
+      expect(replay).toEqual([]);
+    });
   });
 });
