@@ -7,14 +7,14 @@ const __dirname = path.dirname(__filename);
 
 const LITELLM_URL = 'https://raw.githubusercontent.com/BerriAI/litellm/main/model_prices_and_context_window.json';
 
-export interface ModelCapabilityEntry {
+interface ModelCapabilityEntry {
   supportsVision: boolean;
   supportsPdf: boolean;
   supportsAudio: boolean;
   supportsVideo: boolean;
 }
 
-export type ModelCapabilitiesMap = Record<string, ModelCapabilityEntry>;
+type ModelCapabilitiesMap = Record<string, ModelCapabilityEntry>;
 
 async function fetchModelCapabilities(): Promise<ModelCapabilitiesMap> {
   const response = await fetch(LITELLM_URL);
@@ -25,7 +25,10 @@ async function fetchModelCapabilities(): Promise<ModelCapabilitiesMap> {
   const raw = (await response.json()) as Record<string, Record<string, unknown>>;
   const result: ModelCapabilitiesMap = {};
 
+  const EXCLUDED_KEYS = new Set(['sample_spec']);
+
   for (const [modelId, info] of Object.entries(raw)) {
+    if (EXCLUDED_KEYS.has(modelId)) continue;
     // Skip non-model entries (e.g. the "sample_spec" key)
     if (typeof info !== 'object' || info === null) continue;
     if (
@@ -54,7 +57,7 @@ async function main() {
 
   const outputPath = path.join(__dirname, '..', 'src', 'llm', 'model', 'model-capabilities.generated.json');
 
-  const content = JSON.stringify(capabilities, null, 2);
+  const content = JSON.stringify(capabilities, null, 2) + '\n';
   await fs.writeFile(outputPath, content, 'utf-8');
 
   console.info(`Written ${Object.keys(capabilities).length} model entries to ${outputPath}`);

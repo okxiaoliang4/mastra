@@ -1,10 +1,4 @@
 {
-  "sample_spec": {
-    "supportsVision": true,
-    "supportsPdf": false,
-    "supportsAudio": true,
-    "supportsVideo": false
-  },
   "us.writer.palmyra-x4-v1:0": {
     "supportsVision": false,
     "supportsPdf": true,
