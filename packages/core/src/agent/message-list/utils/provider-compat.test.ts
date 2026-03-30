@@ -68,4 +68,44 @@ describe('filterUnsupportedContentParts', () => {
     const result = filterUnsupportedContentParts(messages, 'gpt-4o-audio-preview');
     expect(result).toEqual(messages);
   });
+
+  it('strips unknown MIME types (e.g. docx) on a known model', () => {
+    const docxPart = {
+      type: 'file' as const,
+      mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      data: new Uint8Array([1, 2, 3]),
+      filename: 'report.docx',
+    };
+    const messages: LanguageModelV2Prompt = [{ role: 'user', content: [textPart, docxPart] }];
+    const result = filterUnsupportedContentParts(messages, 'gpt-4o');
+    const content = (result[0] as { content: unknown[] }).content;
+    expect(content[0]).toEqual(textPart);
+    expect((content[1] as { type: string }).type).toBe('text');
+    expect((content[1] as { text: string }).text).toContain('report.docx');
+  });
+
+  it('passes through text/* file parts on any known model', () => {
+    const textFilePart = {
+      type: 'file' as const,
+      mediaType: 'text/csv',
+      data: new Uint8Array([1, 2, 3]),
+      filename: 'data.csv',
+    };
+    const messages: LanguageModelV2Prompt = [{ role: 'user', content: [textFilePart] }];
+    const result = filterUnsupportedContentParts(messages, 'gpt-4o-audio-preview');
+    expect((result[0] as { content: unknown[] }).content[0]).toEqual(textFilePart);
+  });
+
+  it('passes through unknown MIME types on unknown models', () => {
+    const docxPart = {
+      type: 'file' as const,
+      mediaType: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+      data: new Uint8Array([1, 2, 3]),
+      filename: 'report.docx',
+    };
+    const messages: LanguageModelV2Prompt = [{ role: 'user', content: [docxPart] }];
+    // Unknown model — pass everything through
+    const result = filterUnsupportedContentParts(messages, 'totally-unknown-model-xyz-9999');
+    expect((result[0] as { content: unknown[] }).content[0]).toEqual(docxPart);
+  });
 });

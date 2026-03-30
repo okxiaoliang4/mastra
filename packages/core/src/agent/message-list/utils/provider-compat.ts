@@ -216,6 +216,10 @@ export function findToolCallArgs(messages: MastraDBMessage[], toolCallId: string
  *   returned unchanged to avoid false positives on unknown models.
  * - Only `role: 'user'` messages are filtered; system/assistant/tool messages are
  *   passed through as-is.
+ * - `text/*` file parts are always passed through (safe for all text models).
+ * - File parts with MIME types not in a known category (image/pdf/audio/video)
+ *   are stripped when the model is known, to prevent provider 400 errors from
+ *   unsupported formats like .docx, .xlsx, etc.
  *
  * @param messages - The prompt messages to filter
  * @param modelId - The model identifier to look up capabilities for
@@ -239,6 +243,9 @@ export function filterUnsupportedContentParts(
 
       const { mediaType, filename } = part;
 
+      // text/* files are safe for all text models — always pass through
+      if (mediaType.startsWith('text/')) return part;
+
       let required: boolean | null = null;
       if (mediaType.startsWith('image/') || mediaType === 'image/*') {
         required = caps.supportsVision;
@@ -250,11 +257,13 @@ export function filterUnsupportedContentParts(
         required = caps.supportsVideo;
       }
 
-      // Unknown MIME type — pass through
-      if (required === null) return part;
-
-      // Capability present — keep the part
-      if (required) return part;
+      // Known MIME category — check capability
+      if (required !== null) {
+        if (required) return part;
+      } else {
+        // Unknown MIME type (e.g. docx, xlsx) on a known model — strip it.
+        // It's safer to remove than to risk a 400 from the provider.
+      }
 
       // Capability missing — replace with text placeholder
       const label = filename ? `"${filename}" (${mediaType})` : mediaType;
