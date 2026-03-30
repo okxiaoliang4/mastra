@@ -1,6 +1,8 @@
+import type { LanguageModelV2Prompt, LanguageModelV2Message } from '@ai-sdk/provider-v5';
 import type { CoreMessage as CoreMessageV4 } from '@internal/ai-sdk-v4';
 import type { ModelMessage, ToolResultPart } from '@internal/ai-sdk-v5';
 
+import { getModelCapabilities } from '../../../llm/model/model-capabilities';
 import type { IMastraLogger } from '../../../logger';
 import type { MastraDBMessage } from '../state/types';
 
@@ -196,4 +198,72 @@ export function findToolCallArgs(messages: MastraDBMessage[], toolCallId: string
 
   // If not found in DB messages, return empty object
   return {};
+}
+
+// ============================================================================
+// Model Capability Filtering
+// ============================================================================
+
+/**
+ * Filters out unsupported multimodal file parts from user messages based on model capabilities.
+ *
+ * For each user message, file parts whose media type requires a capability the model
+ * lacks (e.g. vision, PDF, audio, video) are replaced with a text placeholder
+ * explaining that the content was not sent.
+ *
+ * - If `modelId` is falsy, messages are returned unchanged.
+ * - If the model is not found in the capabilities database (null), messages are
+ *   returned unchanged to avoid false positives on unknown models.
+ * - Only `role: 'user'` messages are filtered; system/assistant/tool messages are
+ *   passed through as-is.
+ *
+ * @param messages - The prompt messages to filter
+ * @param modelId - The model identifier to look up capabilities for
+ * @returns Messages with unsupported file parts replaced by text placeholders
+ */
+export function filterUnsupportedContentParts(
+  messages: LanguageModelV2Prompt,
+  modelId: string | undefined,
+): LanguageModelV2Prompt {
+  if (!modelId) return messages;
+
+  const caps = getModelCapabilities(modelId);
+  if (caps === null) return messages;
+
+  return messages.map((message: LanguageModelV2Message): LanguageModelV2Message => {
+    if (message.role !== 'user') return message;
+    if (typeof message.content === 'string') return message;
+
+    const filteredContent = message.content.map(part => {
+      if (part.type !== 'file') return part;
+
+      const { mediaType, filename } = part as { type: 'file'; mediaType: string; data: unknown; filename?: string };
+
+      let required: boolean | null = null;
+      if (mediaType.startsWith('image/') || mediaType === 'image') {
+        required = caps.supportsVision;
+      } else if (mediaType === 'application/pdf') {
+        required = caps.supportsPdf;
+      } else if (mediaType.startsWith('audio/') || mediaType === 'audio') {
+        required = caps.supportsAudio;
+      } else if (mediaType.startsWith('video/') || mediaType === 'video') {
+        required = caps.supportsVideo;
+      }
+
+      // Unknown MIME type — pass through
+      if (required === null) return part;
+
+      // Capability present — keep the part
+      if (required) return part;
+
+      // Capability missing — replace with text placeholder
+      const label = filename ? `"${filename}" (${mediaType})` : mediaType;
+      return {
+        type: 'text' as const,
+        text: `[File ${label} was not sent — the current model does not support this content type]`,
+      };
+    });
+
+    return { ...message, content: filteredContent };
+  });
 }
