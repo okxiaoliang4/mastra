@@ -217,6 +217,79 @@ export function addStartStepPartsForAIV5(messages: AIV5Type.UIMessage[]): AIV5Ty
   return messages;
 }
 
+type AssistantFileUIPart = Extract<AIV5Type.UIMessage['parts'][number], { type: 'file' }>;
+
+function restoreAssistantFilePartProviderOptions(
+  uiMessages: AIV5Type.UIMessage[],
+  modelMessages: AIV5Type.ModelMessage[],
+): AIV5Type.ModelMessage[] {
+  const assistantContentBlocks: Array<Array<AIV5Type.UIMessage['parts'][number]>> = [];
+
+  for (const message of uiMessages) {
+    if (message.role !== 'assistant') continue;
+
+    let currentBlock: Array<AIV5Type.UIMessage['parts'][number]> = [];
+
+    for (const part of message.parts) {
+      if (part.type === 'step-start' || AIV5.isToolUIPart(part)) {
+        if (currentBlock.length > 0) {
+          assistantContentBlocks.push(currentBlock);
+          currentBlock = [];
+        }
+        continue;
+      }
+
+      currentBlock.push(part);
+    }
+
+    if (currentBlock.length > 0) {
+      assistantContentBlocks.push(currentBlock);
+    }
+  }
+
+  let assistantBlockIndex = 0;
+
+  return modelMessages.map(message => {
+    if (message.role !== 'assistant' || typeof message.content === 'string') {
+      return message;
+    }
+
+    const sourceBlock = assistantContentBlocks[assistantBlockIndex++];
+    if (!sourceBlock) {
+      return message;
+    }
+
+    const sourceFileParts = sourceBlock.filter((part): part is AssistantFileUIPart => part.type === 'file');
+    if (sourceFileParts.length === 0) {
+      return message;
+    }
+
+    let sourceFilePartIndex = 0;
+
+    return {
+      ...message,
+      content: message.content.map(part => {
+        if (part.type !== 'file') {
+          return part;
+        }
+
+        const sourceFilePart = sourceFileParts[sourceFilePartIndex++];
+        if (!sourceFilePart?.providerMetadata) {
+          return part;
+        }
+
+        return {
+          ...part,
+          providerOptions: {
+            ...(part.providerOptions ?? {}),
+            ...sourceFilePart.providerMetadata,
+          },
+        };
+      }),
+    };
+  });
+}
+
 /**
  * Converts AIV4 UI messages to AIV4 Core messages.
  */
@@ -239,7 +312,7 @@ export function aiV5UIMessagesToAIV5ModelMessages(
 ): AIV5Type.ModelMessage[] {
   const sanitized = sanitizeV5UIMessages(messages, filterIncompleteToolCalls);
   const preprocessed = addStartStepPartsForAIV5(sanitized);
-  const result = AIV5.convertToModelMessages(preprocessed);
+  const result = restoreAssistantFilePartProviderOptions(preprocessed, AIV5.convertToModelMessages(preprocessed));
 
   // Build a lookup of toolCallId → stored modelOutput from providerMetadata.mastra.modelOutput.
   // This allows toModelOutput results computed at tool execution time to be preserved
