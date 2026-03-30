@@ -214,6 +214,7 @@
     "build:watch": "pnpm build:lib --watch",
     "generate:providers": "pnpx tsx scripts/generate-providers.ts",
     "generate:model-router": "pnpx tsx scripts/generate-providers.ts && pnpx tsx scripts/generate-model-docs.ts && cd ../.. && pnpm prettier:changed",
+    "generate:model-capabilities": "pnpx tsx scripts/fetch-model-capabilities.ts",
     "test:unit": "vitest run --exclude '**/tool-builder/**'",
     "test": "npm run test:unit"
   },
