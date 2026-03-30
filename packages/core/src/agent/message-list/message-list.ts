@@ -399,10 +399,14 @@ export class MessageList {
 
         let messages = [...systemMessages, ...modelMessages];
 
-        // Check if any messages have image/file content that needs processing
+        // Check if any user or assistant messages have image/file content that needs processing.
+        // Assistant messages can contain file parts (e.g. model-generated images) whose data
+        // may be stored as data URI strings. These must go through convertImageFilePart() to
+        // strip the data URI prefix before being sent to LLM providers like Google Gemini
+        // which expect raw base64 in inlineData.data.
         const hasImageOrFileContent = modelMessages.some(
           message =>
-            message.role === 'user' &&
+            (message.role === 'user' || message.role === 'assistant') &&
             typeof message.content !== 'string' &&
             message.content.some(part => part.type === 'image' || part.type === 'file'),
         );
@@ -431,6 +435,44 @@ export class MessageList {
                 role: 'user' as const,
                 content: convertedContent,
                 providerOptions: message.providerOptions,
+              } as AIV5Type.ModelMessage;
+            }
+
+            if (message.role === 'assistant' && typeof message.content !== 'string') {
+              const convertedContent = message.content.map(part => {
+                if (part.type === 'file') {
+                  return convertImageFilePart(part, downloadedAssets);
+                }
+                return part;
+              });
+
+              // Ensure all assistant parts have a thoughtSignature for Gemini 3
+              // image models which strictly validate signatures on ALL parts.
+              // If the real signature was lost (cross-model switch, DB migration),
+              // use the Google-sanctioned dummy to skip validation.
+              const withSignatures = convertedContent.map(part => {
+                if (part.type === 'text' || part.type === 'file' || part.type === 'tool-call') {
+                  const providerOpts = (part.providerOptions ?? {}) as Record<string, Record<string, unknown>>;
+                  const googleOpts = providerOpts.google ?? providerOpts.vertex ?? {};
+                  if (!googleOpts.thoughtSignature) {
+                    return {
+                      ...part,
+                      providerOptions: {
+                        ...part.providerOptions,
+                        google: {
+                          ...googleOpts,
+                          thoughtSignature: 'skip_thought_signature_validator',
+                        },
+                      },
+                    };
+                  }
+                }
+                return part;
+              });
+
+              return {
+                ...message,
+                content: withSignatures,
               } as AIV5Type.ModelMessage;
             }
 

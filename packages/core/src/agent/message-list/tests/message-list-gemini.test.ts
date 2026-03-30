@@ -178,6 +178,154 @@ describe('MessageList - Gemini Compatibility', () => {
       expect(llmPrompt[0].role).toBe('system');
       expect(logger.warn).toHaveBeenCalled();
     });
+
+    it('should strip the data URI prefix from assistant file parts before returning llmPrompt', async () => {
+      const list = new MessageList();
+      const assistantImageBase64 = '/9j/4AAQSkZJRgABAQEA';
+
+      list.add({ role: 'user', content: 'Generate an image' }, 'input');
+      list.add(
+        {
+          id: 'assistant-image',
+          role: 'assistant',
+          createdAt: new Date(),
+          content: {
+            format: 2,
+            parts: [
+              {
+                type: 'file',
+                mimeType: 'image/jpeg',
+                data: assistantImageBase64,
+                providerMetadata: {
+                  google: {
+                    thoughtSignature: 'sig-image-strip',
+                  },
+                },
+              },
+            ],
+          },
+        } as MastraDBMessage,
+        'response',
+      );
+      list.add({ role: 'user', content: 'Use the previous image again' }, 'input');
+
+      const llmPrompt = await list.get.all.aiV5.llmPrompt();
+      const assistantMessage = llmPrompt.find(message => message.role === 'assistant');
+
+      expect(assistantMessage).toBeDefined();
+      expect(Array.isArray(assistantMessage?.content)).toBe(true);
+
+      const assistantFilePart = (assistantMessage?.content as Array<{ type: string; data?: unknown }>).find(
+        part => part.type === 'file',
+      );
+
+      expect(assistantFilePart).toBeDefined();
+      expect(assistantFilePart?.data).toBe(assistantImageBase64);
+      expect(assistantFilePart?.data).not.toContain('data:image/jpeg;base64,');
+    });
+
+    it('should preserve thoughtSignature metadata on assistant file parts in llmPrompt', async () => {
+      const list = new MessageList();
+
+      list.add({ role: 'user', content: 'Generate an image' }, 'input');
+      list.add(
+        {
+          id: 'assistant-image-thought-signature',
+          role: 'assistant',
+          createdAt: new Date(),
+          content: {
+            format: 2,
+            parts: [
+              {
+                type: 'file',
+                mimeType: 'image/jpeg',
+                data: '/9j/4AAQSkZJRgABAQEA',
+                providerMetadata: {
+                  google: {
+                    thoughtSignature: 'sig-image-1',
+                  },
+                },
+              },
+            ],
+          },
+        } as MastraDBMessage,
+        'response',
+      );
+      list.add({ role: 'user', content: 'Reuse the previous image' }, 'input');
+
+      const llmPrompt = await list.get.all.aiV5.llmPrompt();
+      const assistantMessage = llmPrompt.find(message => message.role === 'assistant');
+      const assistantFilePart = (
+        assistantMessage?.content as Array<{
+          type: string;
+          providerOptions?: Record<string, unknown>;
+        }>
+      ).find(part => part.type === 'file');
+
+      expect(assistantFilePart).toBeDefined();
+      expect(assistantFilePart?.providerOptions).toEqual({
+        google: {
+          thoughtSignature: 'sig-image-1',
+        },
+      });
+    });
+
+    it('should add dummy thoughtSignature to assistant image file parts without real signatures', async () => {
+      const logger = createMockLogger();
+      const list = new MessageList({ logger });
+
+      list.add({ role: 'user', content: 'Generate an image' }, 'input');
+      list.add(
+        {
+          id: 'assistant-image-no-signature',
+          role: 'assistant',
+          createdAt: new Date(),
+          content: {
+            format: 2,
+            parts: [
+              {
+                type: 'file',
+                mimeType: 'image/jpeg',
+                data: '/9j/4AAQSkZJRgABAQEA',
+              },
+              {
+                type: 'text',
+                text: 'Here is the image you asked for.',
+              },
+              {
+                type: 'file',
+                mimeType: 'image/jpeg',
+                data: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEA',
+              },
+            ],
+          },
+        } as MastraDBMessage,
+        'response',
+      );
+      list.add({ role: 'user', content: 'Use the previous image again' }, 'input');
+
+      const llmPrompt = await list.get.all.aiV5.llmPrompt();
+      const assistantMessage = llmPrompt.find(message => message.role === 'assistant');
+
+      expect(assistantMessage).toBeDefined();
+      expect(Array.isArray(assistantMessage?.content)).toBe(true);
+
+      // File parts should be preserved with dummy thoughtSignature instead of being dropped
+      const fileParts = (
+        assistantMessage?.content as Array<{ type: string; providerOptions?: Record<string, unknown> }>
+      ).filter(part => part.type === 'file');
+      expect(fileParts.length).toBe(2);
+      for (const filePart of fileParts) {
+        expect((filePart.providerOptions as any)?.google?.thoughtSignature).toBe('skip_thought_signature_validator');
+      }
+
+      expect(
+        (assistantMessage?.content as Array<{ type: string; text?: string }>).find(part => part.type === 'text'),
+      ).toMatchObject({
+        type: 'text',
+        text: 'Here is the image you asked for.',
+      });
+    });
   });
 
   describe('data-* parts filtering - Issue #12363', () => {
