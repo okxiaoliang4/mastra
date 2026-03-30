@@ -237,16 +237,16 @@ export function filterUnsupportedContentParts(
     const filteredContent = message.content.map(part => {
       if (part.type !== 'file') return part;
 
-      const { mediaType, filename } = part as { type: 'file'; mediaType: string; data: unknown; filename?: string };
+      const { mediaType, filename } = part;
 
       let required: boolean | null = null;
-      if (mediaType.startsWith('image/') || mediaType === 'image') {
+      if (mediaType.startsWith('image/') || mediaType === 'image/*') {
         required = caps.supportsVision;
       } else if (mediaType === 'application/pdf') {
         required = caps.supportsPdf;
-      } else if (mediaType.startsWith('audio/') || mediaType === 'audio') {
+      } else if (mediaType.startsWith('audio/') || mediaType === 'audio/*') {
         required = caps.supportsAudio;
-      } else if (mediaType.startsWith('video/') || mediaType === 'video') {
+      } else if (mediaType.startsWith('video/') || mediaType === 'video/*') {
         required = caps.supportsVideo;
       }
 
