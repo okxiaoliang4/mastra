@@ -652,8 +652,9 @@ export class AIV5Adapter {
           data: imageData,
           mimeType,
         };
-        if (part.providerOptions) {
-          imageFilePart.providerMetadata = part.providerOptions;
+        const imageProviderMeta = part.providerOptions;
+        if (imageProviderMeta) {
+          imageFilePart.providerMetadata = imageProviderMeta;
         }
         mastraDBParts.push(imageFilePart);
         experimental_attachments.push({
@@ -670,8 +671,12 @@ export class AIV5Adapter {
           data: fileData,
           mimeType,
         };
-        if (part.providerOptions) {
-          v2FilePart.providerMetadata = part.providerOptions;
+        // providerOptions (V5) takes precedence; fall back to providerMetadata (V2)
+        // which may still be present when the upstream convertToModelMessages omits
+        // providerOptions on assistant file parts (AI SDK bug).
+        const fileProviderMeta = part.providerOptions;
+        if (fileProviderMeta) {
+          v2FilePart.providerMetadata = fileProviderMeta;
         }
         if ((filePart as { filename?: string }).filename) {
           (v2FilePart as Record<string, unknown>).filename = (filePart as { filename?: string }).filename;
