@@ -34,7 +34,7 @@ export function ensureGeminiCompatibleMessages<T extends ModelMessage | CoreMess
   messages: T[],
   logger?: IMastraLogger,
 ): T[] {
-  const result = [...messages];
+  const result = [...messages].map(message => stripLegacyGeminiAssistantImageParts(message, logger));
 
   // Ensure first non-system message is user
   const firstNonSystemIndex = result.findIndex(m => m.role !== 'system');
@@ -57,6 +57,52 @@ export function ensureGeminiCompatibleMessages<T extends ModelMessage | CoreMess
   }
 
   return result;
+}
+
+function stripLegacyGeminiAssistantImageParts<T extends ModelMessage | CoreMessageV4>(
+  message: T,
+  logger?: IMastraLogger,
+): T {
+  if (message.role !== 'assistant' || typeof message.content === 'string') {
+    return message;
+  }
+
+  let removedCount = 0;
+  const filteredContent = message.content.filter(part => {
+    if (part.type !== 'file') {
+      return true;
+    }
+
+    // @ts-expect-error types
+    const isImage = typeof part.mediaType === 'string' && part.mediaType.startsWith('image/');
+    const thoughtSignature =
+      part.providerOptions &&
+      typeof part.providerOptions === 'object' &&
+      'google' in part.providerOptions &&
+      part.providerOptions.google &&
+      typeof part.providerOptions.google === 'object' &&
+      'thoughtSignature' in part.providerOptions.google
+        ? part.providerOptions.google.thoughtSignature
+        : undefined;
+
+    if (isImage && !thoughtSignature) {
+      removedCount += 1;
+      return false;
+    }
+
+    return true;
+  });
+
+  if (removedCount > 0) {
+    logger?.warn(
+      `Removed ${removedCount} assistant image part(s) without google thoughtSignature from Gemini prompt compatibility path.`,
+    );
+  }
+
+  return {
+    ...message,
+    content: filteredContent,
+  } as T;
 }
 
 // ============================================================================
