@@ -899,6 +899,7 @@ export function createLLMExecutionStep<TOOLS extends ToolSet = ToolSet, OUTPUT =
           downloadRetries,
           downloadConcurrency,
           supportedUrls: resolvedSupportedUrls,
+          modelId: currentStep.model?.modelId,
         };
         let inputMessages = await messageList.get.all.aiV5.llmPrompt(messageListPromptArgs);
 

@@ -36,7 +36,7 @@ import type {
   SerializedMessageListState,
 } from './state';
 import type { AIV5Type, AIV5ResponseMessage, MessageInput, MessageListInput } from './types';
-import { ensureGeminiCompatibleMessages } from './utils/provider-compat';
+import { ensureGeminiCompatibleMessages, filterUnsupportedContentParts } from './utils/provider-compat';
 
 export class MessageList {
   private messages: MastraDBMessage[] = [];
@@ -375,6 +375,7 @@ export class MessageList {
           downloadConcurrency?: number;
           downloadRetries?: number;
           supportedUrls?: Record<string, RegExp[]>;
+          modelId?: string;
         } = {
           downloadConcurrency: 10,
           downloadRetries: 3,
@@ -440,11 +441,13 @@ export class MessageList {
 
         messages = ensureGeminiCompatibleMessages(messages, this.logger);
 
-        return messages
+        const prompt = messages
           .map(aiV5ModelMessageToV2PromptMessage)
           .filter(
             message => message.role === 'system' || typeof message.content === 'string' || message.content.length > 0,
           );
+
+        return filterUnsupportedContentParts(prompt, options.modelId);
       },
     },
 
