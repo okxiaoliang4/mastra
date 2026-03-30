@@ -8,3 +8,4 @@ export {
   EMBEDDING_MODELS,
   type EmbeddingModelInfo,
 } from './embedding-router';
+export { getModelCapabilities, type ModelCapabilityEntry } from './model-capabilities';
