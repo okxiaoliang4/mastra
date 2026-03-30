@@ -387,6 +387,38 @@ describe('convertFullStreamChunkToMastra', () => {
     });
   });
 
+  it('should preserve provider metadata on file chunks', () => {
+    const chunk: StreamPart = {
+      type: 'file',
+      mediaType: 'image/jpeg',
+      data: '/9j/4AAQSkZJRgABAQEA',
+      // @ts-expect-error types --- IGNORE ---
+      providerMetadata: {
+        google: {
+          thoughtSignature: 'sig-image-1',
+        },
+      },
+    };
+
+    const result = convertFullStreamChunkToMastra(chunk, { runId: 'test-run-123' });
+
+    expect(result).toEqual({
+      type: 'file',
+      runId: 'test-run-123',
+      from: ChunkFrom.AGENT,
+      payload: {
+        data: '/9j/4AAQSkZJRgABAQEA',
+        base64: '/9j/4AAQSkZJRgABAQEA',
+        mimeType: 'image/jpeg',
+        providerMetadata: {
+          google: {
+            thoughtSignature: 'sig-image-1',
+          },
+        },
+      },
+    });
+  });
+
   describe('sanitizeToolCallInput', () => {
     it('should strip <|call|> token from valid JSON', () => {
       expect(sanitizeToolCallInput('{}<|call|>')).toBe('{}');

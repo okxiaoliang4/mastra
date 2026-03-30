@@ -36,4 +36,33 @@ describe('convertFullStreamChunkToUIMessageStream', () => {
       status: 'success',
     });
   });
+
+  it('should preserve provider metadata on file parts', () => {
+    const result = convertFullStreamChunkToUIMessageStream({
+      part: {
+        type: 'file',
+        file: {
+          mediaType: 'image/jpeg',
+          base64: '/9j/4AAQSkZJRgABAQEA',
+        },
+        providerMetadata: {
+          google: {
+            thoughtSignature: 'sig-image-1',
+          },
+        },
+      } as any,
+      onError: error => `Error: ${error}`,
+    });
+
+    expect(result).toEqual({
+      type: 'file',
+      mediaType: 'image/jpeg',
+      url: 'data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEA',
+      providerMetadata: {
+        google: {
+          thoughtSignature: 'sig-image-1',
+        },
+      },
+    });
+  });
 });

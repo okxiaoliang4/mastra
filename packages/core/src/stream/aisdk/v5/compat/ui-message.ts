@@ -103,6 +103,8 @@ export function convertFullStreamChunkToUIMessageStream<UI_MESSAGE extends UIMes
         type: 'file',
         mediaType: part.file.mediaType,
         url: `data:${part.file.mediaType};base64,${part.file.base64}`,
+        // @ts-expect-error types
+        ...(part.providerMetadata != null ? { providerMetadata: part.providerMetadata } : {}),
       };
     }
 
