@@ -22,7 +22,8 @@ export type GeminiVoiceModel =
   | 'gemini-2.5-flash-exp-native-audio-thinking-dialog'
   /** @deprecated Shut down on 2025-12-09. */
   | 'gemini-live-2.5-flash-preview'
-  | 'gemini-2.6.flash-preview-tts';
+  | 'gemini-2.6.flash-preview-tts'
+  | 'gemini-3.1-flash-live-preview';
 
 /**
  * Available voice options for Gemini Live API

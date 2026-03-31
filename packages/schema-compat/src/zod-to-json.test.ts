@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
-import { zodToJsonSchema, ensureAllPropertiesRequired } from './zod-to-json';
+import { zodToJsonSchema, ensureAllPropertiesRequired, stripJsonSchemaFields } from './zod-to-json';
 
 /**
  * Shared test suite for zodToJsonSchema that runs with both Zod v3 and v4.
@@ -722,5 +722,144 @@ describe('ensureAllPropertiesRequired', () => {
     const result = zodToJsonSchema(schema);
     expect(result.required).toContain('required');
     expect(result.required).not.toContain('optional');
+  });
+});
+
+describe('stripJsonSchemaFields', () => {
+  it('removes $schema from the root', () => {
+    const schema = zodToJsonSchema(z.object({ name: z.string() }));
+    expect(schema).toHaveProperty('$schema');
+    const stripped = stripJsonSchemaFields(schema, ['$schema']);
+    expect(stripped).not.toHaveProperty('$schema');
+    expect(stripped.type).toBe('object');
+  });
+
+  it('removes additionalProperties from root and nested objects', () => {
+    const schema = zodToJsonSchema(
+      z.object({
+        user: z.object({ name: z.string() }),
+      }),
+    );
+    const stripped = stripJsonSchemaFields(schema, ['additionalProperties']);
+    expect(stripped).not.toHaveProperty('additionalProperties');
+    const userProp = (stripped.properties as any)?.user;
+    expect(userProp).not.toHaveProperty('additionalProperties');
+  });
+
+  it('removes multiple keys at once', () => {
+    const schema = zodToJsonSchema(z.object({ city: z.string().describe('city name') }));
+    const stripped = stripJsonSchemaFields(schema, ['$schema', 'additionalProperties']);
+    expect(stripped).not.toHaveProperty('$schema');
+    expect(stripped).not.toHaveProperty('additionalProperties');
+    expect(stripped.type).toBe('object');
+    expect((stripped.properties as any)?.city?.type).toBe('string');
+  });
+
+  it('preserves descriptions and required fields', () => {
+    const schema = zodToJsonSchema(
+      z.object({
+        location: z.string().describe('The city'),
+        count: z.number().optional(),
+      }),
+    );
+    const stripped = stripJsonSchemaFields(schema, ['$schema', 'additionalProperties']);
+    expect((stripped.properties as any)?.location?.description).toBe('The city');
+    expect(stripped.required).toContain('location');
+    expect(stripped.required).not.toContain('count');
+  });
+
+  it('recurses into anyOf / oneOf / allOf', () => {
+    const schema: any = {
+      anyOf: [{ type: 'object', properties: { a: { type: 'string' } }, additionalProperties: false }, { type: 'null' }],
+      $schema: 'https://json-schema.org/draft/2020-12/schema',
+    };
+    const stripped = stripJsonSchemaFields(schema, ['$schema', 'additionalProperties']);
+    expect(stripped).not.toHaveProperty('$schema');
+    expect((stripped.anyOf as any[])[0]).not.toHaveProperty('additionalProperties');
+  });
+
+  it('recurses into array items', () => {
+    const schema: any = {
+      type: 'array',
+      items: { type: 'object', additionalProperties: false, properties: { x: { type: 'number' } } },
+    };
+    const stripped = stripJsonSchemaFields(schema, ['additionalProperties']);
+    expect(stripped.items as any).not.toHaveProperty('additionalProperties');
+  });
+
+  it('preserves a property named "additionalProperties" inside properties', () => {
+    // The JSON schema keyword `additionalProperties` should be stripped, but a user-defined
+    // property that happens to be named "additionalProperties" must be kept intact.
+    const schema: any = {
+      type: 'object',
+      properties: {
+        additionalProperties: { type: 'string', description: 'a normal field' },
+        name: { type: 'string' },
+      },
+      required: ['additionalProperties', 'name'],
+      additionalProperties: false, // ← JSON schema keyword, should be stripped
+    };
+    const stripped = stripJsonSchemaFields(schema, ['$schema', 'additionalProperties']);
+
+    // JSON schema keyword removed
+    expect(stripped).not.toHaveProperty('additionalProperties');
+
+    // User-defined property preserved
+    expect(stripped.properties as any).toHaveProperty('additionalProperties');
+    expect((stripped.properties as any).additionalProperties).toEqual({
+      type: 'string',
+      description: 'a normal field',
+    });
+    expect(stripped.required).toContain('additionalProperties');
+    expect(stripped.required).toContain('name');
+  });
+
+  it('preserves a property named "additionalProperties" inside deeply nested properties', () => {
+    const schema: any = {
+      type: 'object',
+      properties: {
+        config: {
+          type: 'object',
+          properties: {
+            additionalProperties: { type: 'boolean' }, // user-defined field
+          },
+          additionalProperties: false, // JSON schema keyword
+        },
+      },
+      additionalProperties: false, // JSON schema keyword
+    };
+    const stripped = stripJsonSchemaFields(schema, ['additionalProperties']);
+
+    // Top-level keyword removed
+    expect(stripped).not.toHaveProperty('additionalProperties');
+
+    const config = (stripped.properties as any)?.config;
+    // Nested keyword removed
+    expect(config).not.toHaveProperty('additionalProperties');
+    // Nested user-defined property preserved
+    expect(config?.properties).toHaveProperty('additionalProperties');
+    expect(config?.properties?.additionalProperties).toEqual({ type: 'boolean' });
+  });
+
+  it('returns non-object values unchanged', () => {
+    expect(stripJsonSchemaFields(null as any, ['$schema'])).toBeNull();
+    expect(stripJsonSchemaFields('string' as any, ['$schema'])).toBe('string');
+  });
+
+  it('Gemini use-case: zodToJsonSchema + strip produces clean parameters', () => {
+    const schema = zodToJsonSchema(
+      z.object({
+        location: z.string().describe('The city or location to get weather for'),
+        unit: z.enum(['celsius', 'fahrenheit']).optional().describe('Temperature unit'),
+      }),
+    );
+    const params = stripJsonSchemaFields(schema, ['$schema', 'additionalProperties']);
+    expect(params).not.toHaveProperty('$schema');
+    expect(params).not.toHaveProperty('additionalProperties');
+    expect(params.type).toBe('object');
+    expect((params.properties as any)?.location?.type).toBe('string');
+    expect((params.properties as any)?.unit?.enum).toEqual(['celsius', 'fahrenheit']);
+    expect(params.required).toContain('location');
+    expect(params.required).not.toContain('unit');
   });
 });

@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Gemini Live Voice E2E</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: system-ui, sans-serif; background: #111; color: #eee; display: flex; flex-direction: column; align-items: center; justify-content: center; min-height: 100vh; gap: 24px; }
+  h1 { font-size: 1.4rem; font-weight: 400; opacity: .7; }
+  #status { font-size: .9rem; opacity: .5; min-height: 1.2em; }
+  .btn { padding: 14px 36px; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; transition: .15s; }
+  #startBtn { background: #4285f4; color: #fff; }
+  #startBtn:hover { background: #5a95f5; }
+  #startBtn:disabled { background: #333; color: #666; cursor: default; }
+  #stopBtn { background: #ea4335; color: #fff; display: none; }
+  #stopBtn:hover { background: #f05545; }
+  #log { width: 90%; max-width: 600px; max-height: 300px; overflow-y: auto; font-size: .8rem; opacity: .6; white-space: pre-wrap; word-break: break-all; }
+</style>
+</head>
+<body>
+  <h1>Gemini Live Voice</h1>
+  <div id="status">Press Start to begin</div>
+  <div>
+    <button class="btn" id="startBtn">Start</button>
+    <button class="btn" id="stopBtn">Stop</button>
+  </div>
+  <div id="log"></div>
+
+<script>
+const WS_URL = `ws://${location.host}`;
+let ws, micCtx, micStream, processor, playCtx, nextPlayTime = 0;
+
+const status = document.getElementById('status');
+const logEl = document.getElementById('log');
+const startBtn = document.getElementById('startBtn');
+const stopBtn = document.getElementById('stopBtn');
+
+function log(msg) {
+  const line = `[${new Date().toLocaleTimeString()}] ${msg}\n`;
+  logEl.textContent += line;
+  logEl.scrollTop = logEl.scrollHeight;
+}
+
+// ---- Mic capture: 48kHz -> downsample to 16kHz PCM Int16 ----
+async function startMic() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  micCtx = new AudioContext({ sampleRate: 48000 });
+  const source = micCtx.createMediaStreamSource(stream);
+  micStream = stream;
+
+  // ScriptProcessorNode: simple, works everywhere for a test tool
+  processor = micCtx.createScriptProcessor(4096, 1, 1);
+  processor.onaudioprocess = (e) => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+    const input = e.inputBuffer.getChannelData(0); // Float32 @ 48kHz
+    // Downsample 48kHz -> 16kHz (factor 3)
+    const ratio = 3;
+    const len = Math.floor(input.length / ratio);
+    const pcm = new Int16Array(len);
+    for (let i = 0; i < len; i++) {
+      // Simple average of 3 samples for anti-alias
+      const idx = i * ratio;
+      const avg = (input[idx] + input[idx + 1] + input[idx + 2]) / 3;
+      pcm[i] = Math.max(-32768, Math.min(32767, Math.round(avg * 32767)));
+    }
+    ws.send(pcm.buffer);
+  };
+
+  source.connect(processor);
+  processor.connect(micCtx.destination); // required for onaudioprocess to fire
+  log('Mic started (48kHz -> 16kHz)');
+}
+
+function stopMic() {
+  if (processor) { processor.disconnect(); processor = null; }
+  if (micStream) { micStream.getTracks().forEach(t => t.stop()); micStream = null; }
+  if (micCtx) { micCtx.close(); micCtx = null; }
+}
+
+// ---- Playback: receive PCM Int16 @ 24kHz -> AudioContext ----
+function initPlayback() {
+  playCtx = new AudioContext({ sampleRate: 24000 });
+  nextPlayTime = 0;
+}
+
+function playPcmChunk(arrayBuffer) {
+  if (!playCtx) return;
+  const int16 = new Int16Array(arrayBuffer);
+  const float32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) {
+    float32[i] = int16[i] / 32768;
+  }
+
+  const audioBuffer = playCtx.createBuffer(1, float32.length, 24000);
+  audioBuffer.getChannelData(0).set(float32);
+
+  const source = playCtx.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(playCtx.destination);
+
+  const now = playCtx.currentTime;
+  if (nextPlayTime < now) nextPlayTime = now + 0.05; // small initial buffer
+  source.start(nextPlayTime);
+  nextPlayTime += audioBuffer.duration;
+}
+
+// ---- WebSocket ----
+function connect() {
+  ws = new WebSocket(WS_URL);
+  ws.binaryType = 'arraybuffer';
+
+  ws.onopen = async () => {
+    status.textContent = 'Connected — speak into your microphone';
+    log('WebSocket connected');
+    initPlayback();
+    await startMic();
+  };
+
+  ws.onmessage = (e) => {
+    if (e.data instanceof ArrayBuffer) {
+      // Binary = PCM audio from model
+      playPcmChunk(e.data);
+    } else {
+      // JSON control message
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'writing') {
+          log(`[${msg.role}] ${msg.text}`);
+        } else if (msg.type === 'toolCall') {
+          log(`🔧 Tool: ${msg.name}(${JSON.stringify(msg.args)})`);
+        } else if (msg.type === 'turnComplete') {
+          log('--- turn complete ---');
+        } else if (msg.type === 'error') {
+          log(`ERROR: ${msg.message}`);
+        } else {
+          log(`Server: ${JSON.stringify(msg)}`);
+        }
+      } catch { log(`Server: ${e.data}`); }
+    }
+  };
+
+  ws.onclose = () => {
+    status.textContent = 'Disconnected';
+    log('WebSocket closed');
+    stopMic();
+  };
+
+  ws.onerror = (e) => {
+    log('WebSocket error');
+    status.textContent = 'Connection error';
+  };
+}
+
+function disconnect() {
+  stopMic();
+  if (ws) { ws.close(); ws = null; }
+  if (playCtx) { playCtx.close(); playCtx = null; }
+  nextPlayTime = 0;
+}
+
+// ---- UI ----
+startBtn.onclick = () => {
+  startBtn.disabled = true;
+  stopBtn.style.display = 'inline-block';
+  status.textContent = 'Connecting...';
+  connect();
+};
+
+stopBtn.onclick = () => {
+  disconnect();
+  startBtn.disabled = false;
+  stopBtn.style.display = 'none';
+  status.textContent = 'Stopped';
+};
+</script>
+</body>
+</html>

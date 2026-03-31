@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { ToolsInput } from '@mastra/core/agent';
+import { zodToJsonSchema, stripJsonSchemaFields } from '@mastra/core/utils/zod-to-json';
 import { MastraVoice } from '@mastra/core/voice';
 import type { VoiceEventType, VoiceConfig } from '@mastra/core/voice';
 import type { WebSocket as WSType } from 'ws';
@@ -26,7 +27,7 @@ type GeminiEventName = Extract<keyof GeminiLiveEventMap, string>;
 /**
  * Default configuration values
  */
-const DEFAULT_MODEL: GeminiVoiceModel = 'gemini-2.0-flash-exp';
+const DEFAULT_MODEL: GeminiVoiceModel = 'gemini-2.5-flash-native-audio-preview-12-2025';
 const DEFAULT_VOICE: GeminiVoiceName = 'Puck';
 
 /**
@@ -436,14 +437,9 @@ export class GeminiLiveVoice extends MastraVoice<
         headers = { headers: { Authorization: `Bearer ${accessToken}` } };
         this.log('Using Vertex AI authentication with OAuth token');
       } else {
-        // Live API endpoint - this is specifically for the Live API
-        wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContent`;
-        headers = {
-          headers: {
-            'x-goog-api-key': this.options.apiKey || '',
-            'Content-Type': 'application/json',
-          },
-        };
+        // Live API endpoint - v1beta with API key as query parameter
+        const apiKey = this.options.apiKey || '';
+        wsUrl = `wss://generativelanguage.googleapis.com/ws/google.ai.generativelanguage.v1beta.GenerativeService.BidiGenerateContent?key=${apiKey}`;
         this.log('Using Live API authentication with API key');
       }
 
@@ -552,7 +548,7 @@ export class GeminiLiveVoice extends MastraVoice<
   /**
    * Send text to be converted to speech
    */
-  async speak(input: string | NodeJS.ReadableStream, options?: GeminiLiveVoiceOptions): Promise<void> {
+  async speak(input: string | NodeJS.ReadableStream, _options?: GeminiLiveVoiceOptions): Promise<void> {
     this.validateConnectionState();
 
     if (typeof input !== 'string') {
@@ -570,48 +566,15 @@ export class GeminiLiveVoice extends MastraVoice<
     // Add to context history
     this.addToContext('user', input);
 
-    // Build text message to Gemini Live API
+    // Send text via realtimeInput.text (v1beta format, compatible with all models including 3.1)
     const textMessage: any = {
-      client_content: {
-        turns: [
-          {
-            role: 'user',
-            parts: [
-              {
-                text: input,
-              },
-            ],
-          },
-        ],
-        turnComplete: true,
+      realtimeInput: {
+        text: input,
       },
     };
 
-    // If runtime options provided, send a session.update first to apply per-turn settings
-    if (options && (options.speaker || options.languageCode || options.responseModalities)) {
-      const updateMessage: UpdateMessage = {
-        type: 'session.update',
-        session: {
-          generation_config: {
-            ...(options.responseModalities ? { response_modalities: options.responseModalities } : {}),
-            speech_config: {
-              ...(options.languageCode ? { language_code: options.languageCode } : {}),
-              ...(options.speaker ? { voice_config: { prebuilt_voice_config: { voice_name: options.speaker } } } : {}),
-            },
-          },
-        },
-      };
-
-      try {
-        this.sendEvent('session.update', updateMessage);
-        this.log('Applied per-turn runtime options', options);
-      } catch (error) {
-        this.log('Failed to apply per-turn runtime options', error);
-      }
-    }
-
     try {
-      this.sendEvent('client_content', textMessage);
+      this.sendEvent('realtimeInput', textMessage);
       this.log('Text message sent', { text: input });
 
       // The response will come via the event system (handleServerContent)
@@ -636,7 +599,7 @@ export class GeminiLiveVoice extends MastraVoice<
         try {
           const base64Audio = this.audioStreamManager.processAudioChunk(chunk);
           const message = this.audioStreamManager.createAudioMessage(base64Audio, 'realtime');
-          this.sendEvent('realtime_input', message);
+          this.sendEvent('realtimeInput', message);
         } catch (error) {
           this.log('Failed to process audio chunk', error);
           this.createAndEmitError(GeminiLiveErrorCode.AUDIO_PROCESSING_ERROR, 'Failed to process audio chunk', error);
@@ -655,7 +618,7 @@ export class GeminiLiveVoice extends MastraVoice<
       const validateAudio = this.audioStreamManager.validateAndConvertAudioInput(audioData as Int16Array);
       const base64Audio = this.audioStreamManager.int16ArrayToBase64(validateAudio);
       const message = this.audioStreamManager.createAudioMessage(base64Audio, 'realtime');
-      this.sendEvent('realtime_input', message);
+      this.sendEvent('realtimeInput', message);
     }
   }
 
@@ -668,13 +631,11 @@ export class GeminiLiveVoice extends MastraVoice<
     let transcriptionText = '';
 
     // Listen for transcription responses
+    // Gemini Live responds to audio with assistant-role text (its interpretation of the audio).
+    // We collect assistant text as the transcription result.
     const onWriting = (data: { text: string; role: 'assistant' | 'user' }) => {
-      if (data.role === 'user') {
-        transcriptionText += data.text;
-        this.log('Received transcription text:', { text: data.text, total: transcriptionText });
-      }
-      // Note: We only collect user role text as transcription
-      // Assistant role text would be responses, not transcription
+      transcriptionText += data.text;
+      this.log('Received transcription text:', { text: data.text, role: data.role, total: transcriptionText });
     };
 
     // Listen for errors
@@ -695,40 +656,39 @@ export class GeminiLiveVoice extends MastraVoice<
     this.on('session', onSession);
 
     try {
-      // Use AudioStreamManager to handle the transcription workflow
+      // Use AudioStreamManager for stream collection, timeout, and cleanup.
+      // The callback sends audio via realtimeInput (the only format Gemini Live WebSocket accepts for audio).
       const result = await this.audioStreamManager.handleAudioTranscription(
         audioStream,
         (base64Audio: string) => {
-          // Send audio and await transcript until turn completes
           return new Promise<string>((resolve, reject) => {
+            const cleanup = () => {
+              this.off('turnComplete' as any, onTurnComplete as any);
+              this.off('error', onErr as any);
+            };
+
+            // Handlers
+            const onTurnComplete = () => {
+              cleanup();
+              resolve(transcriptionText.trim());
+            };
+
+            const onErr = (e: { message: string }) => {
+              cleanup();
+              reject(new Error(e.message));
+            };
+
+            // Wire listeners before sending
+            this.on('turnComplete' as any, onTurnComplete as any);
+            this.on('error', onErr as any);
+
             try {
-              // Create audio message for transcription
-              const message = this.audioStreamManager.createAudioMessage(base64Audio, 'input');
-
-              const cleanup = () => {
-                this.off('turnComplete' as any, onTurnComplete as any);
-                this.off('error', onErr as any);
-              };
-
-              // Handlers
-              const onTurnComplete = () => {
-                cleanup();
-                resolve(transcriptionText.trim());
-              };
-
-              const onErr = (e: { message: string }) => {
-                cleanup();
-                reject(new Error(e.message));
-              };
-
-              // Wire listeners before sending
-              this.on('turnComplete' as any, onTurnComplete as any);
-              this.on('error', onErr as any);
-
-              // Send to Gemini Live API
-              this.sendEvent('client_content', message);
-              this.log('Sent audio for transcription');
+              // Send collected audio as realtimeInput (not client_content — WebSocket rejects inlineData)
+              const message = this.audioStreamManager.createAudioMessage(base64Audio, 'realtime');
+              this.sendEvent('realtimeInput', message);
+              this.log('Sent audio for transcription via realtimeInput');
             } catch (err) {
+              cleanup();
               reject(err as Error);
             }
           });
@@ -1600,6 +1560,7 @@ export class GeminiLiveVoice extends MastraVoice<
           functionResponses: [
             {
               id: toolId,
+              name: toolName,
               response: result,
             },
           ],
@@ -1618,6 +1579,7 @@ export class GeminiLiveVoice extends MastraVoice<
           functionResponses: [
             {
               id: toolId,
+              name: toolName,
               response: { error: errorMessage },
             },
           ],
@@ -1766,40 +1728,46 @@ export class GeminiLiveVoice extends MastraVoice<
       }>;
     }
 
-    // Build the Live API setup message
-    const setupMessage: { setup: LiveGenerateContentSetup } = {
-      setup: {
-        model: this.resolveModelIdentifier(),
+    // Build the Live API setup message (v1beta format)
+    const configPayload: LiveGenerateContentSetup = {
+      model: this.resolveModelIdentifier(),
+      generationConfig: {
+        responseModalities: ['AUDIO'],
+        ...(this.options.speaker
+          ? {
+              speechConfig: {
+                voiceConfig: {
+                  prebuiltVoiceConfig: {
+                    voiceName: this.options.speaker,
+                  },
+                },
+              },
+            }
+          : {}),
       },
     };
 
     // Add system instructions if provided
     if (this.options.instructions) {
-      setupMessage.setup.systemInstruction = {
+      configPayload.systemInstruction = {
         parts: [{ text: this.options.instructions }],
       };
     }
 
-    // Collect tools from both options and addTools method
-    const allTools: Array<{
-      functionDeclarations: Array<{
-        name: string;
-        description?: string;
-        parameters?: unknown;
-      }>;
+    // Collect all function declarations
+    const allFunctionDeclarations: Array<{
+      name: string;
+      description?: string;
+      parameters?: unknown;
     }> = [];
 
     // Add tools from options (GeminiToolConfig[])
     if (this.options.tools && this.options.tools.length > 0) {
       for (const tool of this.options.tools) {
-        allTools.push({
-          functionDeclarations: [
-            {
-              name: tool.name,
-              description: tool.description,
-              parameters: tool.parameters,
-            },
-          ],
+        allFunctionDeclarations.push({
+          name: tool.name,
+          description: tool.description,
+          parameters: tool.parameters,
         });
       }
     }
@@ -1826,14 +1794,10 @@ export class GeminiLiveVoice extends MastraVoice<
             parameters = { type: 'object', properties: {} };
           }
 
-          allTools.push({
-            functionDeclarations: [
-              {
-                name: toolName,
-                description: tool.description || `Tool: ${toolName}`,
-                parameters,
-              },
-            ],
+          allFunctionDeclarations.push({
+            name: toolName,
+            description: tool.description || `Tool: ${toolName}`,
+            parameters,
           });
         } catch (error) {
           this.log('Failed to process tool', { toolName, error });
@@ -1841,13 +1805,17 @@ export class GeminiLiveVoice extends MastraVoice<
       }
     }
 
-    // Add tools to setup message if any exist
-    if (allTools.length > 0) {
-      setupMessage.setup.tools = allTools;
-      this.log('Including tools in setup message', { toolCount: allTools.length });
+    // Add tools to config message if any exist
+    if (allFunctionDeclarations.length > 0) {
+      configPayload.tools = [{ functionDeclarations: allFunctionDeclarations }];
+      this.log('Including tools in config message', {
+        toolCount: allFunctionDeclarations.length,
+        tools: JSON.stringify(allFunctionDeclarations, null, 2),
+      });
     }
 
-    this.log('Sending Live API setup message:', setupMessage);
+    const setupMessage = { setup: configPayload };
+    this.log('Sending Live API setup message:', JSON.stringify(setupMessage, null, 2));
 
     try {
       this.sendEvent('setup', setupMessage);
@@ -1956,11 +1924,11 @@ export class GeminiLiveVoice extends MastraVoice<
     if (type === 'setup' && data.setup) {
       // For setup messages, use the data as-is
       message = data;
-    } else if (type === 'client_content' && data.client_content) {
-      // For client_content messages, use the data as-is
+    } else if (type === 'clientContent' && data.clientContent) {
+      // For clientContent messages, use the data as-is
       message = data;
-    } else if (type === 'realtime_input' && data.realtime_input) {
-      // For realtime_input messages, use the data as-is
+    } else if (type === 'realtimeInput' && data.realtimeInput) {
+      // For realtime audio input messages, use the data as-is
       message = data;
     } else if (type === 'toolResponse' && data.toolResponse) {
       // For toolResponse messages, use the data as-is
@@ -2036,100 +2004,8 @@ export class GeminiLiveVoice extends MastraVoice<
    * Convert Zod schema to JSON Schema for tool parameters
    * @private
    */
-  private convertZodSchemaToJsonSchema(schema: any): unknown {
-    try {
-      // Try to use the schema's toJSON method if available
-      if (typeof schema.toJSON === 'function') {
-        return schema.toJSON();
-      }
-
-      // Try to use the schema's _def property if available (Zod internal)
-      if (schema._def) {
-        return this.convertZodDefToJsonSchema(schema._def);
-      }
-
-      // If it's already a plain object, return as is
-      if (typeof schema === 'object' && !schema.safeParse) {
-        return schema;
-      }
-
-      // Default fallback
-      return {
-        type: 'object',
-        properties: {},
-        description: schema.description || '',
-      };
-    } catch (error) {
-      this.log('Failed to convert Zod schema to JSON schema', { error, schema });
-      return {
-        type: 'object',
-        properties: {},
-        description: 'Schema conversion failed',
-      };
-    }
-  }
-
-  /**
-   * Convert Zod definition to JSON Schema
-   * @private
-   */
-  private convertZodDefToJsonSchema(def: any): unknown {
-    switch (def.typeName) {
-      case 'ZodString':
-        return {
-          type: 'string',
-          description: def.description || '',
-        };
-      case 'ZodNumber':
-        return {
-          type: 'number',
-          description: def.description || '',
-        };
-      case 'ZodBoolean':
-        return {
-          type: 'boolean',
-          description: def.description || '',
-        };
-      case 'ZodArray':
-        return {
-          type: 'array',
-          items: this.convertZodDefToJsonSchema(def.type._def),
-          description: def.description || '',
-        };
-      case 'ZodObject':
-        const properties: Record<string, unknown> = {};
-        const required: string[] = [];
-
-        for (const [key, value] of Object.entries(def.shape())) {
-          properties[key] = this.convertZodDefToJsonSchema((value as any)._def);
-          if ((value as any)._def.typeName === 'ZodOptional') {
-            // Optional field, don't add to required
-          } else {
-            required.push(key);
-          }
-        }
-
-        return {
-          type: 'object',
-          properties,
-          required: required.length > 0 ? required : undefined,
-          description: def.description || '',
-        };
-      case 'ZodOptional':
-        return this.convertZodDefToJsonSchema(def.innerType._def);
-      case 'ZodEnum':
-        return {
-          type: 'string',
-          enum: def.values,
-          description: def.description || '',
-        };
-      default:
-        return {
-          type: 'object',
-          properties: {},
-          description: def.description || '',
-        };
-    }
+  private convertZodSchemaToJsonSchema(schema: any) {
+    return stripJsonSchemaFields(zodToJsonSchema(schema), ['$schema', 'additionalProperties']);
   }
 
   /**

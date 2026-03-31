@@ -279,6 +279,62 @@ function ensureAdditionalPropertiesFalse(schema: JSONSchema7): JSONSchema7 {
 
 // }
 
+/**
+ * Recursively strip specific keys from a JSON Schema object.
+ *
+ * Useful for removing fields that some providers do not accept, such as
+ * `$schema` (a JSON-Schema meta annotation) or `additionalProperties`
+ * (an OpenAPI/JSON-Schema constraint).
+ *
+ * @example
+ * // Strip fields that Gemini's function-calling API does not accept
+ * const geminiParams = stripJsonSchemaFields(zodToJsonSchema(inputSchema), ['$schema', 'additionalProperties']);
+ */
+export function stripJsonSchemaFields(schema: JSONSchema7, keys: string[]): JSONSchema7 {
+  if (typeof schema !== 'object' || schema === null || Array.isArray(schema)) {
+    return schema;
+  }
+
+  // Shallow-copy and remove the requested keys
+  const result: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(schema)) {
+    if (!keys.includes(k)) {
+      result[k] = v;
+    }
+  }
+
+  // Recurse into nested schemas
+  if (result.properties && typeof result.properties === 'object') {
+    result.properties = Object.fromEntries(
+      Object.entries(result.properties as Record<string, JSONSchema7>).map(([k, v]) => [
+        k,
+        stripJsonSchemaFields(v, keys),
+      ]),
+    );
+  }
+
+  for (const kw of ['items', 'additionalProperties'] as const) {
+    if (kw in result && typeof result[kw] === 'object' && result[kw] !== null && !Array.isArray(result[kw])) {
+      result[kw] = stripJsonSchemaFields(result[kw] as JSONSchema7, keys);
+    }
+  }
+  if (Array.isArray(result.items)) {
+    result.items = (result.items as JSONSchema7[]).map(s => stripJsonSchemaFields(s, keys));
+  }
+
+  for (const kw of ['anyOf', 'oneOf', 'allOf'] as const) {
+    if (Array.isArray(result[kw])) {
+      result[kw] = (result[kw] as JSONSchema7[]).map(s => stripJsonSchemaFields(s, keys));
+    }
+  }
+
+  if (result.not && typeof result.not === 'object') {
+    result.not = stripJsonSchemaFields(result.not as JSONSchema7, keys);
+  }
+
+  return result as JSONSchema7;
+}
+
 export function zodToJsonSchema(
   zodSchema: any,
   target: Targets = 'jsonSchema7',

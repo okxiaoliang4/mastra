@@ -30,7 +30,7 @@ testMode('GeminiLiveVoice Tool Arguments - Real API Integration', () => {
     // Create voice instance with real credentials
     const config = {
       apiKey: GOOGLE_API_KEY,
-      model: 'gemini-2.0-flash-exp' as const,
+      model: 'gemini-2.5-flash-native-audio-preview-12-2025' as const,
       debug: true,
     };
 

@@ -259,8 +259,8 @@ describe('GeminiLiveVoice', () => {
 
       expect(mockWs.send).toHaveBeenCalled();
       const sentData = JSON.parse(mockWs.send.mock.calls[0][0]);
-      expect(sentData).toHaveProperty('realtime_input');
-      expect(sentData.realtime_input).toHaveProperty('media_chunks');
+      expect(sentData).toHaveProperty('realtimeInput');
+      expect(sentData.realtimeInput).toHaveProperty('audio');
     });
 
     it('should handle audio stream', async () => {
@@ -321,44 +321,46 @@ describe('GeminiLiveVoice', () => {
 
     it('should transcribe audio stream', async () => {
       const audioStream = new PassThrough();
-      // Resolve quickly without waiting for internal timeout
-      vi.spyOn((voice as any).audioStreamManager, 'handleAudioTranscription').mockResolvedValue('');
       const listenPromise = voice.listen(audioStream);
 
-      // Write audio data
-      audioStream.write(Buffer.alloc(2000)); // Minimum size for transcription
+      // Write audio data and end the stream
+      audioStream.write(Buffer.alloc(2000));
       audioStream.end();
 
-      // Simulate transcription response event
+      // Simulate model responding with text then completing turn
       setTimeout(() => {
-        (voice as any).emit('writing', { text: 'Hello world', role: 'user' });
+        (voice as any).emit('writing', { text: 'Hello world', role: 'assistant' });
         (voice as any).emit('turnComplete', { timestamp: Date.now() });
       }, 10);
 
       const result = await listenPromise;
-      expect(result).toBe('');
+      expect(result).toBe('Hello world');
     });
 
-    it('should handle timeout', async () => {
+    it('should handle stream error', async () => {
       const audioStream = new PassThrough();
-      vi.spyOn((voice as any).audioStreamManager, 'handleAudioTranscription').mockRejectedValue(new Error('timeout'));
       const listenPromise = voice.listen(audioStream);
 
-      audioStream.write(Buffer.alloc(2000));
-      audioStream.end();
+      // Emit error on the audio stream
+      setTimeout(() => {
+        audioStream.destroy(new Error('stream failed'));
+      }, 10);
 
-      // No response; promise should reject via mocked timeout
-      await expect(listenPromise).rejects.toThrow('timeout');
+      await expect(listenPromise).rejects.toThrow('stream failed');
     });
 
-    it('should return empty string for short audio', async () => {
+    it('should return empty string for short audio with no response', async () => {
       const audioStream = new PassThrough();
-      vi.spyOn((voice as any).audioStreamManager, 'handleAudioTranscription').mockResolvedValue('');
       const listenPromise = voice.listen(audioStream);
 
-      // Write very short audio (< 1000 bytes)
+      // Write very short audio
       audioStream.write(Buffer.alloc(500));
       audioStream.end();
+
+      // Simulate turn completing with no text emitted
+      setTimeout(() => {
+        (voice as any).emit('turnComplete', { timestamp: Date.now() });
+      }, 10);
 
       const result = await listenPromise;
       expect(result).toBe('');
@@ -383,7 +385,8 @@ describe('GeminiLiveVoice', () => {
 
       expect(mockWs.send).toHaveBeenCalled();
       const sentData = JSON.parse(mockWs.send.mock.calls[0][0]);
-      expect(sentData).toHaveProperty('client_content');
+      expect(sentData).toHaveProperty('realtimeInput');
+      expect(sentData.realtimeInput.text).toBe('Hello, world!');
     });
 
     it('should handle stream input', async () => {
@@ -394,32 +397,23 @@ describe('GeminiLiveVoice', () => {
 
       expect(mockWs.send).toHaveBeenCalled();
       const sentData = JSON.parse(mockWs.send.mock.calls[0][0]);
-      expect(sentData).toHaveProperty('client_content');
-      expect(sentData.client_content.turns[0].parts[0].text).toBe('Hello from stream');
+      expect(sentData).toHaveProperty('realtimeInput');
+      expect(sentData.realtimeInput.text).toBe('Hello from stream');
     });
 
     it('should throw error on empty text', async () => {
       await expect(voice.speak('')).rejects.toThrow('empty');
     });
 
-    it('should use custom voice when specified', async () => {
+    it('should send text via realtimeInput even with options', async () => {
       await voice.speak('Test', { speaker: 'Puck' });
 
       expect(mockWs.send).toHaveBeenCalled();
 
       const sentPayloads = mockWs.send.mock.calls.map((call: any[]) => JSON.parse(call[0]));
-
-      // Verify a session.update was sent with the requested voice
-      const updateMsg = sentPayloads.find((p: any) => p.session && p.session.generation_config);
-      expect(updateMsg).toBeDefined();
-      expect(updateMsg.session.generation_config.speech_config.voice_config.prebuilt_voice_config.voice_name).toBe(
-        'Puck',
-      );
-
-      // Verify the client_content was sent with the text
-      const clientContent = sentPayloads.find((p: any) => p.client_content);
-      expect(clientContent).toBeDefined();
-      expect(clientContent.client_content.turns[0].parts[0].text).toBe('Test');
+      const textMsg = sentPayloads.find((p: any) => p.realtimeInput?.text);
+      expect(textMsg).toBeDefined();
+      expect(textMsg.realtimeInput.text).toBe('Test');
     });
   });
 
@@ -815,25 +809,14 @@ describe('GeminiLiveVoice', () => {
       expect(setupMsg.setup.systemInstruction.parts[0].text).toBe('You are test');
     });
 
-    it('speak() should send per-turn session.update before content (language, modalities, voice)', async () => {
-      await voice.speak('Hello', { languageCode: 'en-US', responseModalities: ['AUDIO'] as any, speaker: 'Puck' });
+    it('speak() should send text via realtimeInput', async () => {
+      await voice.speak('Hello');
 
       const calls = mockWs.send.mock.calls.map((c: any[]) => JSON.parse(c[0]));
-      const updateIdx = calls.findIndex((p: any) => p.type === 'session.update' || p.session);
-      const contentIdx = calls.findIndex((p: any) => p.client_content);
+      const textMsg = calls.find((p: any) => p.realtimeInput?.text);
 
-      expect(updateIdx).toBeGreaterThanOrEqual(0);
-      expect(contentIdx).toBeGreaterThan(updateIdx);
-
-      const updateMsg = calls[updateIdx];
-      expect(updateMsg.session.generation_config.response_modalities).toContain('AUDIO');
-      expect(updateMsg.session.generation_config.speech_config.language_code).toBe('en-US');
-      expect(updateMsg.session.generation_config.speech_config.voice_config.prebuilt_voice_config.voice_name).toBe(
-        'Puck',
-      );
-
-      const contentMsg = calls[contentIdx];
-      expect(contentMsg.client_content.turns[0].parts[0].text).toBe('Hello');
+      expect(textMsg).toBeDefined();
+      expect(textMsg.realtimeInput.text).toBe('Hello');
     });
 
     it('should process toolCall via inbound message and send tool_result', async () => {
@@ -851,6 +834,7 @@ describe('GeminiLiveVoice', () => {
       expect(toolResult).toBeDefined();
       expect(toolResult.toolResponse.functionResponses).toBeDefined();
       expect(toolResult.toolResponse.functionResponses[0].id).toBe('id-1');
+      expect(toolResult.toolResponse.functionResponses[0].name).toBe('testTool');
       expect(toolResult.toolResponse.functionResponses[0].response).toEqual({ result: 'ok' });
     });
 

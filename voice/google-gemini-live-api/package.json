@@ -40,6 +40,7 @@
     "@internal/lint": "workspace:*",
     "@internal/types-builder": "workspace:*",
     "@mastra/core": "workspace:*",
+    "@mastra/node-audio": "^0.1.7",
     "@types/node": "22.19.15",
     "@types/ws": "^8.18.1",
     "@vitest/coverage-v8": "catalog:",

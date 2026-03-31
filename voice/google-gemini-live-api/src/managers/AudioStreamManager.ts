@@ -27,7 +27,7 @@ export class AudioStreamManager {
   private lastSendTime = 0;
   private pendingChunks: Array<{ chunk: Buffer; timestamp: number }> = [];
   private pendingTimer?: NodeJS.Timeout;
-  private sendToGemini?: (type: 'realtime_input' | 'client_content', message: Record<string, unknown>) => void;
+  private sendToGemini?: (type: 'realtimeInput' | 'clientContent', message: Record<string, unknown>) => void;
 
   // Audio buffer management constants
   private readonly MAX_BUFFER_SIZE = 50 * 1024 * 1024; // 50MB maximum buffer size
@@ -41,7 +41,7 @@ export class AudioStreamManager {
   /**
    * Provide a sender callback that will be used to deliver messages to Gemini
    */
-  setSender(sender: (type: 'realtime_input' | 'client_content', message: Record<string, unknown>) => void): void {
+  setSender(sender: (type: 'realtimeInput' | 'clientContent', message: Record<string, unknown>) => void): void {
     this.sendToGemini = sender;
   }
 
@@ -354,9 +354,9 @@ export class AudioStreamManager {
    */
   createAudioMessage(audioData: string, messageType: 'input' | 'realtime' = 'realtime'): Record<string, unknown> {
     if (messageType === 'input') {
-      // For conversation item creation (traditional listen method)
+      // For conversation item creation (v1beta camelCase format)
       return {
-        client_content: {
+        clientContent: {
           turns: [
             {
               role: 'user',
@@ -374,15 +374,13 @@ export class AudioStreamManager {
         },
       };
     } else {
-      // For real-time streaming
+      // For real-time streaming (v1beta format, compatible with all current models)
       return {
-        realtime_input: {
-          media_chunks: [
-            {
-              mime_type: 'audio/pcm',
-              data: audioData,
-            },
-          ],
+        realtimeInput: {
+          audio: {
+            data: audioData,
+            mimeType: 'audio/pcm',
+          },
         },
       };
     }
@@ -802,7 +800,7 @@ export class AudioStreamManager {
 
     // Send via injected sender
     if (this.sendToGemini) {
-      this.sendToGemini('realtime_input', message);
+      this.sendToGemini('realtimeInput', message);
     } else {
       this.log('No sender configured for AudioStreamManager; dropping audio chunk');
     }

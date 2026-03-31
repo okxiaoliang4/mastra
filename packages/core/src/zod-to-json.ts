@@ -1,1 +1,1 @@
-export { zodToJsonSchema } from '@mastra/schema-compat/zod-to-json';
+export { zodToJsonSchema, stripJsonSchemaFields } from '@mastra/schema-compat/zod-to-json';
