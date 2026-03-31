@@ -2005,7 +2005,12 @@ export class GeminiLiveVoice extends MastraVoice<
    * @private
    */
   private convertZodSchemaToJsonSchema(schema: any) {
-    return stripJsonSchemaFields(zodToJsonSchema(schema), ['$schema', 'additionalProperties']);
+    return stripJsonSchemaFields(zodToJsonSchema(schema), [
+      '$schema',
+      'additionalProperties',
+      'propertyNames',
+      'exclusiveMinimum',
+    ]);
   }
 
   /**
